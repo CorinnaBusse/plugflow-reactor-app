@@ -179,7 +179,6 @@ export default function PlugFlowReactor() {
   const [noisePct, setNoisePct] = useState(3);
   const [sampleInterval, setSampleInterval] = useState(4);
   const [speed, setSpeed] = useState(1);
-  const [eulerRatio, setEulerRatio] = useState(0.1);
   const [running, setRunning] = useState(false);
   const [locked, setLocked] = useState(false); // Lr, CE0, k gesperrt nach Start
   const [, setTick] = useState(0);
@@ -188,7 +187,7 @@ export default function PlugFlowReactor() {
   const [refAreaRight, setRefAreaRight] = useState(null);
 
   const paramsRef = useRef({});
-  paramsRef.current = { Lr, CE0, k, QE, QPuf, epsilon, noisePct, sampleInterval, speed, eulerRatio };
+  paramsRef.current = { Lr, CE0, k, QE, QPuf, epsilon, noisePct, sampleInterval, speed };
 
   const elapsedRef = useRef(0);
   const CArrRef = useRef(new Array(M_CELLS + 1).fill(0));
@@ -241,7 +240,7 @@ export default function PlugFlowReactor() {
       const Cin = p.CE0 * (p.QE / (p.QE + p.QPuf));
 
       const rateMax = Math.max(u / dz, p.k);
-      const subDt = p.eulerRatio / rateMax;
+      const subDt = 0.1 / rateMax;
       const steps = Math.min(1500, Math.max(1, Math.round(dtSim / subDt)));
       const actualSub = dtSim / steps;
 
@@ -265,8 +264,7 @@ export default function PlugFlowReactor() {
       if (t - lastSampleRef.current >= p.sampleInterval) {
         const noiseAbs = (p.noisePct / 100) * p.epsilon * p.CE0;
         const measured = Math.max(0, p.epsilon * pOut + noiseAbs * gaussRef.current());
-        const minKeep = t - windowWidthRef.current * 1.5;
-        noisyRef.current = noisyRef.current.filter((pt) => pt.t >= minKeep);
+        noisyRef.current = noisyRef.current.slice();
         noisyRef.current.push({ t, measured, model: p.epsilon * pOut });
         lastSampleRef.current = t;
       }
@@ -350,6 +348,49 @@ export default function PlugFlowReactor() {
     setRefAreaLeft(null); setRefAreaRight(null);
   };
   const resetZoom = () => setZoomDomain(null);
+  const handleWheelZoom = (e) => {
+    e.preventDefault();
+    const cur = zoomDomain || xDomain;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    const anchor = cur[0] + frac * (cur[1] - cur[0]);
+    const factor = e.deltaY > 0 ? 1.25 : 0.8;
+    let newMin = anchor - (anchor - cur[0]) * factor;
+    let newMax = anchor + (cur[1] - anchor) * factor;
+    const fullSpan = xDomain[1] - xDomain[0];
+    if (newMax - newMin >= fullSpan * 0.999) { setZoomDomain(null); return; }
+    if (newMax - newMin < fullSpan * 0.005) return;
+    setZoomDomain([newMin, newMax]);
+  };
+
+  const [zoomDomainProfile, setZoomDomainProfile] = useState(null);
+  const [profileRefLeft, setProfileRefLeft] = useState(null);
+  const [profileRefRight, setProfileRefRight] = useState(null);
+  const profileBaseDomain = [0, Lr];
+  const profileDisplayDomain = zoomDomainProfile || profileBaseDomain;
+  const handleProfileMouseDown = (e) => { if (e && e.activeLabel !== undefined) { setProfileRefLeft(e.activeLabel); setProfileRefRight(e.activeLabel); } };
+  const handleProfileMouseMove = (e) => { if (profileRefLeft !== null && e && e.activeLabel !== undefined) setProfileRefRight(e.activeLabel); };
+  const handleProfileMouseUp = () => {
+    if (profileRefLeft !== null && profileRefRight !== null && profileRefLeft !== profileRefRight) {
+      setZoomDomainProfile([Math.min(profileRefLeft, profileRefRight), Math.max(profileRefLeft, profileRefRight)]);
+    }
+    setProfileRefLeft(null); setProfileRefRight(null);
+  };
+  const resetZoomProfile = () => setZoomDomainProfile(null);
+  const handleWheelZoomProfile = (e) => {
+    e.preventDefault();
+    const cur = zoomDomainProfile || profileBaseDomain;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    const anchor = cur[0] + frac * (cur[1] - cur[0]);
+    const factor = e.deltaY > 0 ? 1.25 : 0.8;
+    let newMin = anchor - (anchor - cur[0]) * factor;
+    let newMax = anchor + (cur[1] - anchor) * factor;
+    const fullSpan = profileBaseDomain[1] - profileBaseDomain[0];
+    if (newMax - newMin >= fullSpan * 0.999) { setZoomDomainProfile(null); return; }
+    if (newMax - newMin < fullSpan * 0.005) return;
+    setZoomDomainProfile([newMin, newMax]);
+  };
 
   const CustomTooltip = ({ active, payload, label }) => {
     if (!active || !payload || !payload.length) return null;
@@ -447,11 +488,8 @@ export default function PlugFlowReactor() {
               <Field label="Beschleunigung" value={`× ${speed.toFixed(0).replace(".", ",")}`}>
                 <LogSlider min={1} max={2000} value={speed} onChange={setSpeed} />
               </Field>
-              <Field label="Schrittweite (Rate·Δt)" value={eulerRatio.toFixed(2).replace(".", ",")}>
-                <LogSlider min={0.01} max={2.5} value={eulerRatio} onChange={setEulerRatio} />
-              </Field>
               <div style={{ fontFamily: SANS, fontSize: 11, color: unstableRef.current ? OHM_RED : GRAY, fontWeight: unstableRef.current ? 700 : 400 }}>
-                {unstableRef.current ? "⚠ Schrittweite zu groß — numerisch instabil." : "Kleiner = genauer/stabiler."}
+                {unstableRef.current ? "⚠ numerisch instabil." : "Integration läuft mit fest eingestellter, stabiler Schrittweite."}
               </div>
             </PanelBox>
           </div>
@@ -512,7 +550,7 @@ export default function PlugFlowReactor() {
                   </button>
                 )}
               </div>
-              <div style={{ width: "100%", height: 320 }}>
+              <div style={{ width: "100%", height: 320 }} onWheel={handleWheelZoom}>
                 <ResponsiveContainer>
                   <ComposedChart margin={{ top: 10, right: 18, bottom: 22, left: 30 }}
                     onMouseDown={handleChartMouseDown} onMouseMove={handleChartMouseMove} onMouseUp={handleChartMouseUp}>
@@ -535,31 +573,47 @@ export default function PlugFlowReactor() {
               </div>
             </div>
             <div style={{ fontFamily: SANS, fontSize: 10.5, color: GRAY, paddingLeft: 4 }}>
-              Zum Zoomen im Diagramm einen Bereich aufziehen (klicken + ziehen). Punkte = simulierte Messung (Rauschen einstellbar). Grau gestrichelt = max. Absorption bei vollständigem Umsatz. Beachte die Totzeit nach Änderungen an den Pumpen — typisch für Pfropfenströmung.
+              Ziehen = Bereich hineinzoomen, Mausrad = rein/raus zoomen. Punkte = simulierte Messung (Rauschen einstellbar). Grau gestrichelt = max. Absorption bei vollständigem Umsatz. Beachte die Totzeit nach Änderungen an den Pumpen — typisch für Pfropfenströmung.
             </div>
+
 
             <div style={{ position: "relative", background: CHART_BG, border: `1px solid ${PANEL_BORDER}`, borderRadius: 8,
               boxShadow: "0 1px 3px rgba(0,0,0,0.05)", padding: "10px 8px 4px 0" }}>
-              <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 11.5, color: INK, textTransform: "uppercase", letterSpacing: "0.03em", padding: "0 10px", marginBottom: 2 }}>
-                Konzentrationsprofil entlang des Reaktors (aktuell)
+              <div className="flex items-center justify-between" style={{ padding: "0 10px", marginBottom: 2 }}>
+                <span style={{ fontFamily: SANS, fontWeight: 700, fontSize: 11.5, color: INK, textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                  Konzentrationsprofil entlang des Reaktors (aktuell)
+                </span>
+                {zoomDomainProfile && (
+                  <button onClick={resetZoomProfile} className="ohm-btn" style={{ fontFamily: MONO, fontSize: 10.5, background: "#fff", border: `1px solid ${PANEL_BORDER}`, borderRadius: 4, padding: "3px 8px", color: OHM_RED }}>
+                    ⤾ Zoom zurücksetzen
+                  </button>
+                )}
               </div>
-              <div style={{ width: "100%", height: 220 }}>
+              <div style={{ width: "100%", height: 220 }} onWheel={handleWheelZoomProfile}>
                 <ResponsiveContainer>
-                  <ComposedChart data={profileData} margin={{ top: 10, right: 18, bottom: 22, left: 30 }}>
+                  <ComposedChart data={profileData} margin={{ top: 10, right: 18, bottom: 22, left: 30 }}
+                    onMouseDown={handleProfileMouseDown} onMouseMove={handleProfileMouseMove} onMouseUp={handleProfileMouseUp}>
                     <CartesianGrid stroke={CHART_GRID} strokeDasharray="2 4" />
-                    <XAxis dataKey="z" type="number" domain={[0, Lr]} stroke={GRAY} tick={{ fontFamily: MONO, fontSize: 11, fill: GRAY }}
+                    <XAxis dataKey="z" type="number" domain={profileDisplayDomain} allowDataOverflow stroke={GRAY} tick={{ fontFamily: MONO, fontSize: 11, fill: GRAY }}
                       tickFormatter={(v) => v.toFixed(0).replace(".", ",")}
-                      label={{ value: "Position z (cm)", position: "insideBottom", offset: -14, fill: GRAY, fontSize: 12, fontFamily: SANS, fontWeight: 600 }} />
+                      label={{ value: "Position z / cm", position: "insideBottom", offset: -14, fill: GRAY, fontSize: 12, fontFamily: SANS, fontWeight: 600 }} />
                     <YAxis type="number" domain={[0, Math.max(0.05, Cin * 1.1)]} stroke={GRAY} tick={{ fontFamily: MONO, fontSize: 11, fill: GRAY }}
                       tickFormatter={(v) => v.toFixed(2).replace(".", ",")}
                       width={54}
-                      label={{ value: "c (mol/L)", angle: -90, position: "insideLeft", offset: 8, fill: INK, fontSize: 12.5, fontFamily: SANS, fontWeight: 600, style: { textAnchor: "middle" } }} />
+                      label={{ value: "c / mol/L", angle: -90, position: "insideLeft", offset: 8, fill: INK, fontSize: 12.5, fontFamily: SANS, fontWeight: 600, style: { textAnchor: "middle" } }} />
                     <Tooltip formatter={(v) => `${v.toFixed(3).replace(".", ",")} mol/L`} contentStyle={{ fontFamily: MONO, fontSize: 11 }} />
                     <Line dataKey="C" stroke={OHM_BLUE} strokeWidth={2.2} dot={false} isAnimationActive={false} name="Edukt C" />
                     <Line dataKey="P" stroke={OHM_RED} strokeWidth={2.2} dot={false} isAnimationActive={false} name="Produkt P" />
+                    {profileRefLeft !== null && profileRefRight !== null && (
+                      <ReferenceArea x1={profileRefLeft} x2={profileRefRight} strokeOpacity={0.3} fill={OHM_BLUE} fillOpacity={0.12} />
+                    )}
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>
+              <div style={{ fontFamily: SANS, fontSize: 10, color: GRAY, padding: "2px 10px 6px" }}>
+                Ziehen = hineinzoomen, Mausrad = rein/raus zoomen.
+              </div>
+
               <div style={{ fontFamily: SANS, fontSize: 10.5, color: GRAY, padding: "0 10px 8px" }}>
                 Blau = verbleibendes Edukt, Rot = gebildetes Produkt — Momentaufnahme über die gesamte Rohrlänge, nicht über die Zeit.
               </div>
