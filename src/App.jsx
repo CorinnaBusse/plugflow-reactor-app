@@ -180,7 +180,7 @@ export default function PlugFlowReactor() {
   const [sampleInterval, setSampleInterval] = useState(4);
   const [speed, setSpeed] = useState(1);
   const [running, setRunning] = useState(false);
-  const [locked, setLocked] = useState(false); // Lr, CE0, k gesperrt nach Start
+  const [locked, setLocked] = useState(false); // Lr, CE0, k, ε, Rauschen, Messintervall gesperrt nach Start
   const [, setTick] = useState(0);
   const [zoomDomain, setZoomDomain] = useState(null); // [min,max] oder null = live
   const [refAreaLeft, setRefAreaLeft] = useState(null);
@@ -472,16 +472,19 @@ export default function PlugFlowReactor() {
               </div>
             </PanelBox>
 
-            <PanelBox title="Messung">
-              <Field label="Extinktionskoeffizient ε (dimensionslos)" value={epsilon.toFixed(2).replace(".", ",")}>
-                <LogSlider min={0.2} max={5} value={epsilon} onChange={setEpsilon} />
+            <PanelBox title="Messung (nur vor Start änderbar)">
+              <Field label="Extinktionskoeffizient ε (dimensionslos)" value={epsilon.toFixed(2).replace(".", ",")} locked={locked}>
+                <LogSlider min={0.2} max={5} value={epsilon} onChange={setEpsilon} disabled={locked} />
               </Field>
-              <Field label="Messrauschen (σ)" value={`± ${noisePct.toFixed(1).replace(".", ",")} %`}>
-                <LinearSlider min={0} max={15} step={0.5} value={noisePct} onChange={setNoisePct} />
+              <Field label="Messrauschen (σ)" value={`± ${noisePct.toFixed(1).replace(".", ",")} %`} locked={locked}>
+                <LinearSlider min={0} max={15} step={0.5} value={noisePct} onChange={setNoisePct} disabled={locked} />
               </Field>
-              <Field label="Messintervall" value={fmtTime(sampleInterval)}>
-                <LogSlider min={0.5} max={60} value={sampleInterval} onChange={setSampleInterval} />
+              <Field label="Messintervall" value={fmtTime(sampleInterval)} locked={locked}>
+                <LogSlider min={0.5} max={60} value={sampleInterval} onChange={setSampleInterval} disabled={locked} />
               </Field>
+              <div style={{ fontFamily: SANS, fontSize: 11, color: GRAY }}>
+                {locked ? "Für diesen Lauf gesperrt — erst nach 'Neuer Lauf' änderbar." : "Nur vor dem Start änderbar."}
+              </div>
             </PanelBox>
 
             <PanelBox title="Zeitraffer &amp; Integration">
