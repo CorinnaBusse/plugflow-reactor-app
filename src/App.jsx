@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   ComposedChart, Line, Scatter, XAxis, YAxis, CartesianGrid,
-  ResponsiveContainer, ReferenceLine, ReferenceArea, Tooltip,
+  ResponsiveContainer, ReferenceLine, ReferenceArea, Tooltip, Legend,
 } from "recharts";
 
 /* ---------------------------------------------------------------------
@@ -86,6 +86,36 @@ function LogSlider({ min, max, value, onChange, disabled }) {
   return <input className="ohm-slider" type="range" min={0} max={100} step={0.1} value={pos} disabled={disabled}
     onChange={(e) => onChange(posToLog(parseFloat(e.target.value), min, max))} />;
 }
+function FlowInput({ label, value, onChange, min, max, color }) {
+  const fmt = (v) => String(v).replace(".", ",");
+  const [text, setText] = useState(fmt(value));
+  useEffect(() => { setText(fmt(value)); }, [value]);
+  const commit = () => {
+    const v = parseFloat(text.replace(",", "."));
+    if (!isFinite(v)) { setText(fmt(value)); return; }
+    const clamped = Math.min(max, Math.max(min, v));
+    onChange(clamped);
+    setText(fmt(clamped));
+  };
+  return (
+    <label style={{ display: "block" }}>
+      <span style={{ display: "block", fontFamily: SANS, fontSize: 11, letterSpacing: "0.02em", color: GRAY, fontWeight: 500, marginBottom: 4 }}>
+        {label}
+      </span>
+      <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <input type="text" inputMode="decimal" value={text}
+          onChange={(e) => setText(e.target.value)} onBlur={commit}
+          onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") { setText(fmt(value)); e.currentTarget.blur(); } }}
+          style={{ width: "100%", minWidth: 0, fontFamily: MONO, fontSize: 14, fontWeight: 700, color: INK, textAlign: "right",
+            border: `1px solid ${PANEL_BORDER}`, borderLeft: `3px solid ${color}`, borderRadius: 4, padding: "5px 8px", background: "#fff" }} />
+        <span style={{ fontFamily: MONO, fontSize: 12, color: GRAY, whiteSpace: "nowrap" }}>mL/min</span>
+      </span>
+      <span style={{ display: "block", fontFamily: SANS, fontSize: 10, color: GRAY, marginTop: 3 }}>
+        {fmt(min)}–{fmt(max)} mL/min, Enter übernimmt
+      </span>
+    </label>
+  );
+}
 function PanelBox({ title, children }) {
   return (
     <div style={{ background: PANEL, border: `1px solid ${PANEL_BORDER}`, borderRadius: 8, padding: "14px 16px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
@@ -140,7 +170,7 @@ function TubeGraphic({ P, pMaxRef, Lr, running, pumpPhase }) {
   return (
     <svg viewBox="0 0 420 190" style={{ width: "100%", height: "100%" }}>
       {/* Pumpen */}
-      <PumpIcon cx={30} cy={55} label="Pumpe E" running={running} phase={pumpPhase} color={OHM_RED} />
+      <PumpIcon cx={30} cy={55} label="Pumpe Ester" running={running} phase={pumpPhase} color={OHM_RED} />
       <PumpIcon cx={30} cy={125} label="Pumpe Puffer" running={running} phase={-pumpPhase} color={OHM_BLUE} />
 
       {/* Zulaufleitungen zum Mischpunkt */}
@@ -171,23 +201,24 @@ function TubeGraphic({ P, pMaxRef, Lr, running, pumpPhase }) {
 --------------------------------------------------------------------- */
 export default function PlugFlowReactor() {
   const [Lr, setLr] = useState(50);       // cm, Reaktorlänge
-  const [CE0, setCE0] = useState(1.0);    // mol/L, Konzentration Edukt-Stammlösung
+  const [CE0, setCE0] = useState(0.2);    // mmol/L, Konzentration Edukt-Stammlösung (→ c_ein = 0,1 mmol/L bei Q_E = Q_Puffer)
   const [k, setK] = useState(0.05);       // s^-1
   const [QE, setQE] = useState(30);       // mL/min
   const [QPuf, setQPuf] = useState(30);   // mL/min
-  const [epsilon, setEpsilon] = useState(1.0);
-  const [noisePct, setNoisePct] = useState(3);
+  const [epsilon, setEpsilon] = useState(5); // L/(mmol·cm), molarer Extinktionskoeffizient
+  const [dCuv, setDCuv] = useState(1);       // cm, Schichtdicke Küvette
+  const [noisePct, setNoisePct] = useState(2);
   const [sampleInterval, setSampleInterval] = useState(4);
   const [speed, setSpeed] = useState(1);
   const [running, setRunning] = useState(false);
-  const [locked, setLocked] = useState(false); // Lr, CE0, k, ε, Rauschen, Messintervall gesperrt nach Start
+  const [locked, setLocked] = useState(false); // Lr, CE0, k, ε, d, Rauschen, Messintervall gesperrt nach Start
   const [, setTick] = useState(0);
   const [zoomDomain, setZoomDomain] = useState(null); // [min,max] oder null = live
   const [refAreaLeft, setRefAreaLeft] = useState(null);
   const [refAreaRight, setRefAreaRight] = useState(null);
 
   const paramsRef = useRef({});
-  paramsRef.current = { Lr, CE0, k, QE, QPuf, epsilon, noisePct, sampleInterval, speed };
+  paramsRef.current = { Lr, CE0, k, QE, QPuf, epsilon, dCuv, noisePct, sampleInterval, speed };
 
   const elapsedRef = useRef(0);
   const CArrRef = useRef(new Array(M_CELLS + 1).fill(0));
@@ -203,7 +234,7 @@ export default function PlugFlowReactor() {
     const Qtot = (p.QE + p.QPuf) / 60;
     const u = Qtot / A_TUBE;
     const tau = u > 0 ? p.Lr / u : 60;
-    return Math.min(2000, Math.max(30, 8 * tau));
+    return Math.min(8000, Math.max(30, 8 * tau));
   }, []);
 
   const initRun = useCallback(() => {
@@ -262,10 +293,11 @@ export default function PlugFlowReactor() {
 
       const pOut = P[M_CELLS];
       if (t - lastSampleRef.current >= p.sampleInterval) {
-        const noiseAbs = (p.noisePct / 100) * p.epsilon * p.CE0;
-        const measured = Math.max(0, p.epsilon * pOut + noiseAbs * gaussRef.current());
+        const ed = p.epsilon * p.dCuv; // Lambert-Beer: A = ε·d·c
+        const noiseAbs = (p.noisePct / 100) * ed * p.CE0;
+        const measured = Math.max(0, ed * pOut + noiseAbs * gaussRef.current());
         noisyRef.current = noisyRef.current.slice();
-        noisyRef.current.push({ t, measured, model: p.epsilon * pOut });
+        noisyRef.current.push({ t, measured, QE: p.QE, QPuf: p.QPuf });
         lastSampleRef.current = t;
       }
 
@@ -287,17 +319,22 @@ export default function PlugFlowReactor() {
 
   const exportCSV = () => {
     const csvNum = (x) => (x === null || x === undefined || Number.isNaN(x) ? "" : x.toFixed(5).replace(".", ","));
+    const metaNum = (x) => String(+x.toPrecision(6)).replace(".", ",");
     const p = paramsRef.current;
-    const Qtot = (p.QE + p.QPuf) / 60, u = Qtot / A_TUBE, tau = p.Lr / u;
-    const Cin = p.CE0 * (p.QE / (p.QE + p.QPuf));
     const meta = [
       `# Rohrreaktor-Monitor Messexport`,
-      `# Lr=${p.Lr} cm; CE0=${p.CE0} mol/L; k=${p.k} 1/s; QE=${p.QE} mL/min; QPuffer=${p.QPuf} mL/min; epsilon=${p.epsilon}`,
-      `# C_ein (nach Verdünnung)=${Cin.toFixed(4).replace(".", ",")} mol/L; Verweilzeit tau=${tau.toFixed(2).replace(".", ",")} s; Messrauschen=${p.noisePct}%; Messintervall=${p.sampleInterval}s`,
-      `# Zeitpunkt: ${new Date().toLocaleString("de-DE")}`,
+      `# Exportzeitpunkt;${new Date().toLocaleString("de-DE")}`,
+      `# Reaktorlänge L;${metaNum(p.Lr)};cm`,
+      `# Rohrquerschnitt A_Rohr;${metaNum(A_TUBE)};cm²`,
+      `# c_ein_Ester (Stammlösung vor Verdünnung);${metaNum(p.CE0)};mmol/L`,
+      `# Geschwindigkeitskonstante k;${metaNum(p.k)};1/s`,
+      `# Extinktionskoeffizient ε;${metaNum(p.epsilon)};L/(mmol·cm)`,
+      `# Schichtdicke Küvette d;${metaNum(p.dCuv)};cm`,
+      `# Messrauschen σ;${metaNum(p.noisePct)};%`,
+      `# Messintervall;${metaNum(p.sampleInterval)};s`,
       ``,
-      `Zeit_s;Absorption_Ausgang_gemessen;Absorption_Ausgang_Modell`,
-      ...noisyRef.current.map((pt) => `${csvNum(pt.t)};${csvNum(pt.measured)};${csvNum(pt.model)}`),
+      `Zeit_s;Q_Ester_mL_min;Q_Puffer_mL_min;Absorption_Ausgang_gemessen`,
+      ...noisyRef.current.map((pt) => `${csvNum(pt.t)};${metaNum(pt.QE)};${metaNum(pt.QPuf)};${csvNum(pt.measured)}`),
     ];
     const csvContent = "\uFEFF" + meta.join("\r\n");
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
@@ -318,17 +355,12 @@ export default function PlugFlowReactor() {
   const u = Qtot / A_TUBE;
   const tau = u > 0 ? Lr / u : Infinity;
   const Cin = CE0 * (QE / (QE + QPuf));
-  const pOutNow = PArrRef.current[M_CELLS];
-  const cOutNow = CArrRef.current[M_CELLS];
-  const aOutNow = epsilon * pOutNow;
-  const pMaxRef = Math.max(0.02, Cin);
+  const lastMeasurement = noisyRef.current[noisyRef.current.length - 1];
+  const pMaxRef = Cin;
 
-  let yMaxObserved = aOutNow;
+  let yMaxObserved = 0;
   noisyRef.current.forEach((pt) => {
-    if (pt.t >= xDomain[0]) {
-      if (pt.measured > yMaxObserved) yMaxObserved = pt.measured;
-      if (pt.model > yMaxObserved) yMaxObserved = pt.model;
-    }
+    if (pt.t >= xDomain[0] && pt.measured > yMaxObserved) yMaxObserved = pt.measured;
   });
   const yMax = Math.max(0.02, yMaxObserved * 1.35);
   const displayDomain = zoomDomain || xDomain;
@@ -447,10 +479,10 @@ export default function PlugFlowReactor() {
           <div className="lg:col-span-3 flex flex-col gap-4">
             <PanelBox title="Reaktor (nur vor Start änderbar)">
               <Field label="Reaktorlänge L" value={`${Lr.toFixed(0).replace(".", ",")} cm`} locked={locked}>
-                <LinearSlider min={10} max={200} step={5} value={Lr} onChange={setLr} disabled={locked} />
+                <LinearSlider min={10} max={700} step={5} value={Lr} onChange={setLr} disabled={locked} />
               </Field>
-              <Field label="Konz. Edukt-Stammlösung C_E0" value={`${CE0.toFixed(2).replace(".", ",")} mol/L`} locked={locked}>
-                <LinearSlider min={0.1} max={2} step={0.05} value={CE0} onChange={setCE0} disabled={locked} />
+              <Field label="Konz. Edukt-Stammlösung c_E0" value={`${CE0.toFixed(3).replace(".", ",")} mmol/L`} locked={locked}>
+                <LogSlider min={0.01} max={2} value={CE0} onChange={setCE0} disabled={locked} />
               </Field>
               <Field label="Geschwindigkeitskonstante k" value={`${k.toFixed(3).replace(".", ",")} s⁻¹`} locked={locked}>
                 <LogSlider min={0.002} max={0.5} value={k} onChange={setK} disabled={locked} />
@@ -462,10 +494,10 @@ export default function PlugFlowReactor() {
 
             <PanelBox title="Zulauf (Info)">
               <div style={{ fontFamily: SANS, fontSize: 11, color: GRAY }}>
-                Regler für Pumpe E und Pumpe Puffer sitzen jetzt direkt an der Reaktorgrafik.
+                Volumenströme für Pumpe Ester und Pumpe Puffer werden direkt unter der Reaktorgrafik eingegeben.
               </div>
               <div style={{ fontFamily: MONO, fontSize: 12, color: INK, fontWeight: 700, marginTop: 8 }}>
-                C_ein = {Cin.toFixed(3).replace(".", ",")} mol/L
+                c_ein = {Cin.toFixed(3).replace(".", ",")} mmol/L
               </div>
               <div style={{ fontFamily: MONO, fontSize: 12, color: INK, fontWeight: 700 }}>
                 Verweilzeit τ = {fmtTime(tau)}
@@ -473,11 +505,14 @@ export default function PlugFlowReactor() {
             </PanelBox>
 
             <PanelBox title="Messung (nur vor Start änderbar)">
-              <Field label="Extinktionskoeffizient ε (dimensionslos)" value={epsilon.toFixed(2).replace(".", ",")} locked={locked}>
-                <LogSlider min={0.2} max={5} value={epsilon} onChange={setEpsilon} disabled={locked} />
+              <Field label="Extinktionskoeffizient ε" value={`${epsilon.toFixed(2).replace(".", ",")} L/(mmol·cm)`} locked={locked}>
+                <LogSlider min={0.1} max={50} value={epsilon} onChange={setEpsilon} disabled={locked} />
+              </Field>
+              <Field label="Schichtdicke Küvette d" value={`${dCuv.toFixed(1).replace(".", ",")} cm`} locked={locked}>
+                <LinearSlider min={0.1} max={5} step={0.1} value={dCuv} onChange={setDCuv} disabled={locked} />
               </Field>
               <Field label="Messrauschen (σ)" value={`± ${noisePct.toFixed(1).replace(".", ",")} %`} locked={locked}>
-                <LinearSlider min={0} max={15} step={0.5} value={noisePct} onChange={setNoisePct} disabled={locked} />
+                <LinearSlider min={0} max={3} step={0.1} value={noisePct} onChange={setNoisePct} disabled={locked} />
               </Field>
               <Field label="Messintervall" value={fmtTime(sampleInterval)} locked={locked}>
                 <LogSlider min={0.5} max={60} value={sampleInterval} onChange={setSampleInterval} disabled={locked} />
@@ -489,7 +524,7 @@ export default function PlugFlowReactor() {
 
             <PanelBox title="Zeitraffer &amp; Integration">
               <Field label="Beschleunigung" value={`× ${speed.toFixed(0).replace(".", ",")}`}>
-                <LogSlider min={1} max={2000} value={speed} onChange={setSpeed} />
+                <LogSlider min={1} max={100} value={speed} onChange={setSpeed} />
               </Field>
               <div style={{ fontFamily: SANS, fontSize: 11, color: unstableRef.current ? OHM_RED : GRAY, fontWeight: unstableRef.current ? 700 : 400 }}>
                 {unstableRef.current ? "⚠ numerisch instabil." : "Integration läuft mit fest eingestellter, stabiler Schrittweite."}
@@ -505,14 +540,10 @@ export default function PlugFlowReactor() {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div style={{ background: PANEL, border: `1px solid ${PANEL_BORDER}`, borderRadius: 8, padding: "8px 10px" }}>
-                <Field label="Pumpe E (Q_E)" value={`${QE.toFixed(0).replace(".", ",")} mL/min`}>
-                  <LinearSlider min={2} max={150} step={1} value={QE} onChange={setQE} />
-                </Field>
+                <FlowInput label="Pumpe Ester" value={QE} onChange={setQE} min={2} max={150} color={OHM_RED} />
               </div>
               <div style={{ background: PANEL, border: `1px solid ${PANEL_BORDER}`, borderRadius: 8, padding: "8px 10px" }}>
-                <Field label="Pumpe Puffer (Q_Puffer)" value={`${QPuf.toFixed(0).replace(".", ",")} mL/min`}>
-                  <LinearSlider min={2} max={150} step={1} value={QPuf} onChange={setQPuf} />
-                </Field>
+                <FlowInput label="Pumpe Puffer" value={QPuf} onChange={setQPuf} min={2} max={150} color={OHM_BLUE} />
               </div>
             </div>
             <div className="flex items-center gap-3 flex-wrap">
@@ -527,14 +558,14 @@ export default function PlugFlowReactor() {
                 ⤓ CSV exportieren
               </button>
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <PanelBox title="Ausgang: Edukt C">
-                <div style={{ fontFamily: MONO, fontSize: 16, color: INK, fontWeight: 700 }}>{cOutNow.toFixed(3).replace(".", ",")} mol/L</div>
-                <div style={{ fontFamily: MONO, fontSize: 10.5, color: GRAY }}>Umsatz: {Cin > 0 ? (100 * (1 - cOutNow / Cin)).toFixed(1).replace(".", ",") : "0,0"} %</div>
-              </PanelBox>
-              <PanelBox title="Ausgang: Absorption">
-                <div style={{ fontFamily: MONO, fontSize: 16, color: OHM_RED, fontWeight: 700 }}>{aOutNow.toFixed(3).replace(".", ",")}</div>
-                <div style={{ fontFamily: MONO, fontSize: 10.5, color: GRAY }}>ε·P(Ausgang)</div>
+            <div>
+              <PanelBox title="Photometer">
+                <div style={{ fontFamily: MONO, fontSize: 16, color: OHM_RED, fontWeight: 700 }}>
+                  {lastMeasurement ? lastMeasurement.measured.toFixed(3).replace(".", ",") : "—"}
+                </div>
+                <div style={{ fontFamily: MONO, fontSize: 10.5, color: GRAY }}>
+                  {lastMeasurement ? `Absorption, Messung bei t = ${fmtTime(lastMeasurement.t)}` : "noch keine Messung"}
+                </div>
               </PanelBox>
             </div>
           </div>
@@ -566,9 +597,13 @@ export default function PlugFlowReactor() {
                       width={54}
                       label={{ value: "Absorption (Ausgang)", angle: -90, position: "insideLeft", offset: 8, fill: INK, fontSize: 12.5, fontFamily: SANS, fontWeight: 600, style: { textAnchor: "middle" } }} />
                     <Tooltip content={<CustomTooltip />} />
+                    <Legend verticalAlign="top" align="right" height={24} iconSize={10}
+                      wrapperStyle={{ fontFamily: SANS, fontSize: 11, color: INK }}
+                      payload={[
+                        { value: "Messung", type: "circle", color: OHM_RED },                        { value: "max. (vollst. Umsatz)", type: "plainline", color: GRAY, payload: { strokeDasharray: "2 3" } },
+                      ]} />
                     <Scatter data={noisyRef.current} dataKey="measured" fill={OHM_RED} fillOpacity={0.85} isAnimationActive={false} shape="circle" r={3} name="Messung" />
-                    <ReferenceLine y={epsilon * Cin} stroke={GRAY} strokeDasharray="2 3" strokeOpacity={0.5} />
-                    {refAreaLeft !== null && refAreaRight !== null && (
+                    <ReferenceLine y={epsilon * dCuv * Cin} stroke={GRAY} strokeDasharray="2 3" strokeOpacity={0.5} />                    {refAreaLeft !== null && refAreaRight !== null && (
                       <ReferenceArea x1={refAreaLeft} x2={refAreaRight} strokeOpacity={0.3} fill={OHM_BLUE} fillOpacity={0.12} />
                     )}
                   </ComposedChart>
@@ -600,12 +635,14 @@ export default function PlugFlowReactor() {
                     <XAxis dataKey="z" type="number" domain={profileDisplayDomain} allowDataOverflow stroke={GRAY} tick={{ fontFamily: MONO, fontSize: 11, fill: GRAY }}
                       tickFormatter={(v) => v.toFixed(0).replace(".", ",")}
                       label={{ value: "Position z / cm", position: "insideBottom", offset: -14, fill: GRAY, fontSize: 12, fontFamily: SANS, fontWeight: 600 }} />
-                    <YAxis type="number" domain={[0, Math.max(0.05, Cin * 1.1)]} stroke={GRAY} tick={{ fontFamily: MONO, fontSize: 11, fill: GRAY }}
-                      tickFormatter={(v) => v.toFixed(2).replace(".", ",")}
-                      width={54}
-                      label={{ value: "c / mol/L", angle: -90, position: "insideLeft", offset: 8, fill: INK, fontSize: 12.5, fontFamily: SANS, fontWeight: 600, style: { textAnchor: "middle" } }} />
-                    <Tooltip formatter={(v) => `${v.toFixed(3).replace(".", ",")} mol/L`} contentStyle={{ fontFamily: MONO, fontSize: 11 }} />
-                    <Line dataKey="C" stroke={OHM_BLUE} strokeWidth={2.2} dot={false} isAnimationActive={false} name="Edukt C" />
+                    <YAxis type="number" domain={[0, Cin * 1.1]} stroke={GRAY} tick={{ fontFamily: MONO, fontSize: 11, fill: GRAY }}
+                      tickFormatter={(v) => v.toFixed(3).replace(".", ",")}
+                      width={72}
+                      label={{ value: "c / mmol L⁻¹", angle: -90, position: "insideLeft", offset: 0, fill: INK, fontSize: 12.5, fontFamily: SANS, fontWeight: 600, style: { textAnchor: "middle" } }} />
+                    <Tooltip formatter={(v) => `${v.toFixed(4).replace(".", ",")} mmol L⁻¹`} contentStyle={{ fontFamily: MONO, fontSize: 11 }} />
+                    <Legend verticalAlign="top" align="right" height={24} iconSize={10} iconType="line"
+                      wrapperStyle={{ fontFamily: SANS, fontSize: 11, color: INK }} />
+                    <Line dataKey="C" stroke={OHM_BLUE} strokeWidth={2.2} dot={false} isAnimationActive={false} name="Edukt c" />
                     <Line dataKey="P" stroke={OHM_RED} strokeWidth={2.2} dot={false} isAnimationActive={false} name="Produkt P" />
                     {profileRefLeft !== null && profileRefRight !== null && (
                       <ReferenceArea x1={profileRefLeft} x2={profileRefRight} strokeOpacity={0.3} fill={OHM_BLUE} fillOpacity={0.12} />
@@ -626,9 +663,9 @@ export default function PlugFlowReactor() {
 
 
         <div style={{ borderTop: `1px solid ${PANEL_BORDER}`, paddingTop: 10, display: "flex", flexWrap: "wrap", gap: "6px 22px" }}>
-          <span style={{ fontFamily: SANS, fontSize: 11, color: GRAY }}>Modell: ∂C/∂t + u·∂C/∂z = −k·C (Edukt), ∂P/∂t + u·∂P/∂z = +k·C (Produkt) — Finite-Volumen, live integriert</span>
-          <span style={{ fontFamily: SANS, fontSize: 11, color: GRAY }}>u = (Q_E+Q_Puffer)/A_Rohr, τ = L/u — Trägheit hier: reine Transportverzögerung (Totzeit) statt Rührkessel-Verzögerung</span>
-          <span style={{ fontFamily: SANS, fontSize: 11, color: GRAY }}>Gegen die analytische Pfropfenströmungs-Gleichung C_aus = C_ein·e^(−kτ) validiert (Abweichung &lt;0,5 %)</span>
+          <span style={{ fontFamily: SANS, fontSize: 11, color: GRAY }}>Modell: ∂c/∂t + u·∂c/∂z = −k·c (Edukt), ∂P/∂t + u·∂P/∂z = +k·c (Produkt) — Finite-Volumen, live integriert</span>
+          <span style={{ fontFamily: SANS, fontSize: 11, color: GRAY }}>u = (Q_E+Q_Puffer)/A_Rohr, τ = L/u, A = ε·d·P(Ausgang) (Lambert-Beer) —Trägheit hier: reine Transportverzögerung (Totzeit)</span>
+          <span style={{ fontFamily: SANS, fontSize: 11, color: GRAY }}>Gegen die analytische Pfropfenströmungs-Gleichung c_aus = c_ein·e^(−kτ) validiert (Abweichung &lt;0,5 %)</span>
         </div>
       </div>
     </div>
